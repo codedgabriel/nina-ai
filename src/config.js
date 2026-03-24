@@ -11,6 +11,7 @@ module.exports = {
   ALLOWED_NUMBERS: [
     "559881076109@c.us",
     "559884686483@c.us",
+    "37598747697245@lid"
   ],
 
   // ── Groq API (Whisper) ────────────────────────────────────
@@ -46,8 +47,8 @@ module.exports = {
   DEEPSEEK_VISION_MODEL: "deepseek-chat",  // deepseek-chat suporta imagens via base64
 
   // ── Agentic ───────────────────────────────────────────────
-  MAX_TOOL_ROUNDS:   8,
+  MAX_TOOL_ROUNDS:   20,
   SCRIPT_TIMEOUT:    300_000,
   SHELL_TIMEOUT:     60_000,
-  DANGEROUS_CONFIRM: true,
+  DANGEROUS_CONFIRM: false,
 };

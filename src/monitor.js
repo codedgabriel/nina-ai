@@ -10,10 +10,10 @@
 //    (base da memória de longo prazo)
 // ============================================================
 
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 const cron  = require("node-cron");
-const os    = require("os");
-const fs    = require("fs");
-const path  = require("path");
 const axios = require("axios");
 
 const { runCommand }          = require("./shell");
@@ -205,78 +205,80 @@ Se não há nada urgente: {"should_act": false}`,
 // ── Check de recursos ─────────────────────────────────────────
 
 async function checkResources() {
-  const now    = Date.now();
-  const total  = os.totalmem();
-  const free   = os.freemem();
-  const ramPct = ((total - free) / total) * 100;
-
-  // RAM alta por 2 checks consecutivos → age
-  if (ramPct > THRESHOLDS.ram) {
-    state.highRamRounds++;
-    if (state.highRamRounds >= 2 && (now - state.lastRamAlert) > THRESHOLDS.alertCooldown) {
-      // Limpa cache do kernel (seguro, não mata processos)
-      await runCommand("sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true");
-
-      const { output: top } = await runCommand(
-        "ps aux --sort=-%mem | awk 'NR>1 && $4>3 {print $11, $4\"%\"}' | head -5"
-      );
-
-      const d = await aiDecide(
-        `RAM em ${ramPct.toFixed(0)}%, limpa cache executada. Processos: ${top}`,
-        "Deve notificar DG?"
-      );
-
-      if (d.should_act) {
-        notify(`RAM em ${ramPct.toFixed(0)}% — limpei o cache do sistema.\n${d.message}`, "importante");
-        logDecision({ category: "monitor", action: `limpei cache do kernel (RAM ${ramPct.toFixed(0)}%)`, reason: `RAM acima de ${THRESHOLDS.ram}%`, result: d.message, urgency: "importante" });
-        if (d.command) await runCommand(d.command);
-      }
-
-      state.lastRamAlert  = now;
-      state.highRamRounds = 0;
+  const stats = await getSystemStats();
+  const { cpuPercent, memPercent, diskPercent } = stats;
+  
+  // Verificar temperatura da CPU (se disponível)
+  let cpuTemp = null;
+  try {
+    const tempPath = "/sys/class/thermal/thermal_zone0/temp";
+    if (fs.existsSync(tempPath)) {
+      const tempRaw = fs.readFileSync(tempPath, "utf-8").trim();
+      cpuTemp = parseInt(tempRaw) / 1000; // Convertendo de millidegrees para Celsius
     }
-  } else {
-    state.highRamRounds = 0;
+  } catch (e) {
+    // Silencioso - temperatura não disponível em todos os sistemas
   }
-
-  // CPU alta
-  const { output: cpuRaw } = await runCommand("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'");
-  const cpuPct = parseFloat(cpuRaw) || 0;
-
-  if (cpuPct > THRESHOLDS.cpu) {
-    state.highCpuRounds++;
-    if (state.highCpuRounds >= 2 && (now - state.lastCpuAlert) > THRESHOLDS.alertCooldown) {
-      const { output: top } = await runCommand(
-        "ps aux --sort=-%cpu | awk 'NR>1 && $3>10 {print $11, $3\"%\"}' | head -5"
-      );
-
-      const d = await aiDecide(
-        `CPU em ${cpuPct.toFixed(0)}% por 2 checks. Top: ${top}`,
-        "Isso é preocupante? Deve notificar DG?"
-      );
-
-      if (d.should_act) {
-        notify(d.message || `CPU em ${cpuPct.toFixed(0)}% há algum tempo.\nProcessos: ${top}`);
-        if (d.command) await runCommand(d.command);
-      }
-
-      state.lastCpuAlert  = now;
-      state.highCpuRounds = 0;
-    }
-  } else {
-    state.highCpuRounds = 0;
+  
+  const alerts = [];
+  
+  // Alertas de CPU
+  if (cpuPercent > 90) {
+    alerts.push({
+      level: "warning",
+      message: `CPU muito alta: ${cpuPercent}%`,
+      action: "verificar processos pesados"
+    });
   }
-
-  // Disco
-  const { output: diskRaw } = await runCommand("df / | tail -1 | awk '{print $5}' | tr -d '%'");
-  const diskPct = parseInt(diskRaw) || 0;
-
-  if (diskPct > THRESHOLDS.disk && (now - state.lastDiskAlert) > THRESHOLDS.alertCooldown) {
-    const { output: big } = await runCommand("du -sh /* 2>/dev/null | sort -rh | head -5");
-    notify(`disco em ${diskPct}%. maiores diretórios:\n${big}`, "importante");
-  logDecision({ category: "monitor", action: `alerta de disco (${diskPct}%)`, reason: `disco acima de ${THRESHOLDS.disk}%`, urgency: "importante" });
-    state.lastDiskAlert = now;
+  
+  // Alertas de memória
+  if (memPercent > 85) {
+    alerts.push({
+      level: "critical",
+      message: `Memória muito alta: ${memPercent}%`,
+      action: "liberar memória ou matar processos"
+    });
   }
+  
+  // Alertas de disco
+  if (diskPercent > 80) {
+    alerts.push({
+      level: "warning",
+      message: `Disco quase cheio: ${diskPercent}%`,
+      action: "limpar arquivos temporários"
+    });
+  }
+  
+  // Alertas de temperatura
+  if (cpuTemp !== null && cpuTemp > 80) {
+    alerts.push({
+      level: "critical",
+      message: `Temperatura da CPU crítica: ${cpuTemp}°C`,
+      action: "verificar ventilação e carga"
+    });
+  }
+  
+  // Log detalhado
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    cpu: cpuPercent,
+    memory: memPercent,
+    disk: diskPercent,
+    temperature: cpuTemp,
+    alerts: alerts.length,
+    hasCritical: alerts.some(a => a.level === "critical")
+  };
+  
+  // Salvar no log de monitoramento
+  const logPath = path.join(os.homedir(), "nina-files", "logs", "monitor.jsonl");
+  fs.appendFileSync(logPath, JSON.stringify(logEntry) + "\n");
+  
+  return {
+    stats,
+    temperature: cpuTemp,
+    alerts,
+    timestamp: new Date().toISOString()
+  };
 }
 
 // ── Serviços monitorados ──────────────────────────────────────

@@ -94,14 +94,16 @@ const processing = new Set();
 // ── Handler de mensagens ─────────────────────────────────────
 
 client.on("message", async (msg) => {
-  if (!ALLOWED_NUMBERS.includes(msg.from)) return;
+console.log("[Debug] Mensagem de:", msg.from);
+const normalizedFrom = msg.from.replace("@lid", "@c.us");
+  // if (!ALLOWED_NUMBERS.includes(normalizedFrom)) return;
   if (msg.isGroupMsg || msg.from.includes("@g.us")) return;
   if (processing.has(msg.id.id)) return;
 
   processing.add(msg.id.id);
   setTimeout(() => processing.delete(msg.id.id), 30_000);
 
-  const senderNumber = msg.from;
+  const senderNumber = normalizedFrom;
   const isOwner      = senderNumber === MY_NUMBER;
 
   let contact = getContact(senderNumber);
@@ -205,11 +207,13 @@ client.on("message", async (msg) => {
     const cmd = pendingConfirmations.get(senderNumber);
     const txt = userText.toLowerCase().trim();
 
-    if (/^(sim|confirma|confirmo|pode|yes|ok|executa)$/.test(txt)) {
+    if (/(sim|confirma|confirmo|pode|yes|ok|executa)/i.test(txt)) {
       pendingConfirmations.delete(senderNumber);
-      const { runCommand } = require("./shell");
-      const { output, error } = await runCommand(cmd, 60_000);
-      const reply = error ? `erro: ${error}` : `\`\`\`\n${output}\n\`\`\``;
+      const reply = await askNina(
+      `O usuário já confirmou explicitamente a execução do seguinte comando. NÃO peça confirmação novamente. Execute diretamente:\n\n${cmd}`,
+      contact,
+      senderNumber
+    );
       await persist("nina", reply, senderNumber);
       await sendText(msg, senderNumber, reply);
     } else {
@@ -231,8 +235,11 @@ client.on("message", async (msg) => {
   }
 
   if (reply.startsWith("⚠️ comando perigoso")) {
-    const match = reply.match(/`([^`]+)`/);
-    if (match) pendingConfirmations.set(senderNumber, match[1]);
+    const { DANGEROUS_CONFIRM } = require("./config");
+    if (DANGEROUS_CONFIRM) {
+      const match = reply.match(/`([^`]+)`/);
+      if (match) pendingConfirmations.set(senderNumber, match[1]);
+    }
   }
 
   await persist("nina", reply, senderNumber);

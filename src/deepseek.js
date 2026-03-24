@@ -38,7 +38,12 @@ async function askNina(userMessage, contact = null, fromNumber = "unknown") {
   const history = getRecentMessages(fromNumber, CONTEXT_MESSAGES);
 
   // Combina tools built-in com tools nativas aprendidas em runtime
-  const allTools = [...tools, ...getNativeToolDefs()];
+  const seen = new Set();
+    const allTools = [...tools].filter(t => {
+      if (seen.has(t.function.name)) return false;
+      seen.add(t.function.name);
+      return true;
+    });
 
   const messages = [{ role: "system", content: system }];
   for (const msg of history) {
@@ -62,12 +67,17 @@ async function askNina(userMessage, contact = null, fromNumber = "unknown") {
 
     let response;
     try {
+      console.log("[DeepSeek Debug] messages count:", messages.length);
+      console.log("[DeepSeek Debug] first message role:", messages[0]?.role);
+      console.log("[DeepSeek Debug] system prompt slice:", messages[0]?.content?.slice(0, 100));
+      console.log("[DeepSeek Debug] last message:", JSON.stringify(messages[messages.length-1]));
+      console.log("[DeepSeek Debug] all messages:", JSON.stringify(messages.slice(1), null, 2).slice(0, 1000));
       response = await http.post("/chat/completions", {
         model:       DEEPSEEK_MODEL,
         messages,
         tools: allTools,
         tool_choice: "auto",
-        temperature: 0.3,
+        temperature: 0.7,
         max_tokens:  2048,
       });
     } catch (err) {
@@ -80,6 +90,10 @@ async function askNina(userMessage, contact = null, fromNumber = "unknown") {
 
     const choice = response.data?.choices?.[0];
     if (!choice) return "...";
+    console.log("[DeepSeek Debug] finish_reason:", choice.finish_reason);
+    console.log("[DeepSeek Debug] content:", JSON.stringify(choice.message?.content));
+    console.log("[DeepSeek Debug] tool_calls:", JSON.stringify(choice.message?.tool_calls)?.slice(0, 300));
+    console.log("[DeepSeek Debug] full response:", JSON.stringify(response.data).slice(0, 500));
 
     const responseMsg = choice.message;
 

@@ -186,23 +186,23 @@ const DEFAULT_AUTONOMY = {
   shell_read:       "auto",     // ls, cat, ps, df, top, grep, find
   shell_write:      "auto",     // criação de arquivos, mkdir
   shell_execute:    "auto",     // execução de scripts
-  shell_install:    "confirm",  // apt install, npm install, pip install
-  shell_dangerous:  "confirm",  // rm, kill, chmod, etc.
+  shell_install:    "auto",  // apt install, npm install, pip install
+  shell_dangerous:  "auto",  // rm, kill, chmod, etc.
   shell_system:     "deny",     // shutdown, reboot, mkfs
 
   browser_read:     "auto",     // navegar, extrair dados, ler páginas
   browser_interact: "auto",     // clicar, preencher formulários
-  browser_auth:     "confirm",  // fazer login em qualquer site
-  browser_purchase: "confirm",  // qualquer ação que envolva dinheiro
+  browser_auth:     "auto",  // fazer login em qualquer site
+  browser_purchase: "auto",  // qualquer ação que envolva dinheiro
 
   file_read:        "auto",     // ler arquivos
   file_write:       "auto",     // criar/editar arquivos
-  file_delete:      "confirm",  // deletar arquivos
+  file_delete:      "auto",  // deletar arquivos
   file_system:      "deny",     // mexer em /etc, /sys, /boot
 
   network_fetch:    "auto",     // buscar URLs, APIs
   network_send:     "auto",     // enviar dados (webhooks, APIs)
-  network_external: "confirm",  // mandar email, SMS, webhook externo
+  network_external: "auto",  // mandar email, SMS, webhook externo
 
   cron_add:         "auto",     // agendar tarefas
   cron_remove:      "auto",     // remover tarefas agendadas

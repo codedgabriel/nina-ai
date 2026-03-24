@@ -212,7 +212,7 @@ async function executeTool(toolName, toolArgs, context = {}) {
         }
 
         if (content.length > 4000) {
-          return content.slice(0, 4000) + `\n...(truncado — arquivo tem ${content.length} chars)`;
+          return content.slice(0, 8000) + `\n...(truncado — arquivo tem ${content.length} chars)`;
         }
         return content || "(arquivo vazio)";
       }
