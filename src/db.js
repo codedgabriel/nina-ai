@@ -7,6 +7,12 @@ const { DB_PATH } = require("./config");
 
 const db = new Database(DB_PATH);
 
+// Migração: adiciona colunas novas se não existirem
+try {
+  db.exec("ALTER TABLE reminders ADD COLUMN target_number TEXT");
+  db.exec("ALTER TABLE reminders ADD COLUMN target_name TEXT");
+} catch {} // ignora se já existir
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS messages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,11 +23,13 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS reminders (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    text        TEXT NOT NULL,
-    remind_at   TEXT NOT NULL,
-    remind_date TEXT,
-    sent        INTEGER DEFAULT 0,
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    text          TEXT NOT NULL,
+    remind_at     TEXT NOT NULL,
+    remind_date   TEXT,
+    sent          INTEGER DEFAULT 0,
+    target_number TEXT,
+    target_name   TEXT,
     created_at  DATETIME DEFAULT (datetime('now','localtime'))
   );
 
@@ -102,10 +110,10 @@ function getLastMessageId() {
 
 // ── Lembretes ────────────────────────────────────────────────
 
-function saveReminder(text, remindAt, remindDate = null) {
+function saveReminder(text, remindAt, remindDate = null, targetNumber = null, targetName = null) {
   db.prepare(
-    "INSERT INTO reminders (text, remind_at, remind_date) VALUES (?, ?, ?)"
-  ).run(text, remindAt, remindDate);
+    "INSERT INTO reminders (text, remind_at, remind_date, target_number, target_name) VALUES (?, ?, ?, ?, ?)"
+  ).run(text, remindAt, remindDate, targetNumber, targetName);
 }
 
 function getPendingReminders() {

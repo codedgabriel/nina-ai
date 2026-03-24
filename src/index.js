@@ -1,28 +1,43 @@
 // ============================================================
-//  Nina v7 — Jarvis Mode (Function Calling Real)
-//  O modelo decide sozinho quando e como usar ferramentas
+//  Nina v4 — Handler Principal
+//  WhatsApp + DeepSeek + Groq Whisper + Monitor Proativo
 // ============================================================
 
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
 
 const { MY_NUMBER, SESSION_PATH, ALLOWED_NUMBERS } = require("./config");
-const { saveMessage, getLastMessageId }            = require("./db");
-const { saveToVector }                             = require("./vector");
-const { askNina }                                  = require("./ollama");
-const { learnFromMessage }                         = require("./learner");
-const { savePhoto }                                = require("./files");
-const { handleReminderIfNeeded, startReminderCron, setMessageSender } = require("./reminders");
+const { saveMessage, getLastMessageId }             = require("./db");
+const { saveToVector }                              = require("./vector");
+const { askNina }                                   = require("./deepseek");
+const { learnFromMessage }                          = require("./learner");
+const { savePhoto }                                 = require("./files");
+const { transcribeAudio }                           = require("./audio");
+const { setClient, sendText }                       = require("./sender");
+const { analyzeImage }                              = require("./vision");
+const { updateLocationFromCoords, updateLocationFromText } = require("./location");
+const { startNotifications, setNotificationSender, enqueue } = require("./notifications");
+const {
+  setProactiveSender, setLastMessageGetter, startProactive,
+}                                                           = require("./proactive");
+const { logDecision }                                       = require("./decisions");
+const { setSendProgress }                           = require("./executor");
+const { handleReminderIfNeeded, startReminderCron, setMessageSender, setAnyMessageSender } = require("./reminders");
+const { startMonitor, setMonitorSender, setSmartNotify } = require("./monitor");
+const { initPreinstalledSkills }                    = require("./preinstalled-skills");
+const { initCapabilities }                          = require("./capabilities");
+const { startFinance }                              = require("./finance");
+const { initPreinstalledSkills2 }                   = require("./preinstalled-skills-2");
+const { startWatchers, setWatcherSender }           = require("./watchers");
 const {
   getContact, saveContact,
   isWaitingIdentification, markAskedIdentification, clearPendingIdentification,
 } = require("./contacts");
 
-// ── Confirmações pendentes { number -> cmd } ──────────────────
-
 const pendingConfirmations = new Map();
+let lastUserMessageAt = null;  // timestamp da última msg do usuário
 
-// ── Cliente WhatsApp ─────────────────────────────────────────
+// ── Cliente WhatsApp ──────────────────────────────────────────
 
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: SESSION_PATH }),
@@ -38,42 +53,53 @@ client.on("qr", (qr) => {
 });
 
 client.on("ready", () => {
-  console.log("[Nina] Conectada no WhatsApp. Jarvis mode ativo.");
-  setMessageSender((text) => client.sendMessage(MY_NUMBER, text));
+  console.log("[Nina] Conectada. DeepSeek + Groq + Monitor ativo.");
+
+  const send = (text) => client.sendMessage(MY_NUMBER, text);
+
+  setClient(client);
+  _sendMessage = send;         // watchdog restart
+  setMessageSender(send);    // lembretes
+  setAnyMessageSender((number, text) => client.sendMessage(number, text)); // lembretes p/ terceiros
+  setMonitorSender(send);    // monitor proativo
+  setWatcherSender(send);    // watchers customizáveis
+  setSendProgress((num, txt) => client.sendMessage(num, txt).catch(() => {}));
+  setNotificationSender(send);
+  startNotifications();
+  setSmartNotify((msg, opts) => enqueue(msg, opts)); // monitor usa notificações inteligentes
+  setProactiveSender(send);
+  setLastMessageGetter(() => lastUserMessageAt);
+  startProactive();
   startReminderCron();
+  startMonitor();
+  startWatchers();
+  initPreinstalledSkills();
+  initPreinstalledSkills2();
+  initCapabilities();
+  startFinance();
 });
 
-// ── Helpers ──────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────
 
-async function persistMessage(role, content, fromNumber) {
+async function persist(role, content, fromNumber) {
   saveMessage(role, content, fromNumber);
-  const id  = getLastMessageId();
+  const id = getLastMessageId();
   saveToVector(id, content, role, fromNumber, new Date().toISOString()).catch(() => {});
 }
 
-async function sendReply(msg, senderNumber, text) {
-  const safe = text.length > 4000 ? text.slice(0, 3900) + "\n...(truncado)" : text;
-  try {
-    await msg.reply(safe);
-  } catch {
-    try { await client.sendMessage(senderNumber, safe); }
-    catch (e) { console.error("[WhatsApp] Falha ao enviar:", e.message); }
-  }
-}
-
-// ── Debounce ─────────────────────────────────────────────────
+// ── Debounce ──────────────────────────────────────────────────
 
 const processing = new Set();
 
-// ── Handler ───────────────────────────────────────────────────
+// ── Handler de mensagens ─────────────────────────────────────
 
 client.on("message", async (msg) => {
   if (!ALLOWED_NUMBERS.includes(msg.from)) return;
   if (msg.isGroupMsg || msg.from.includes("@g.us")) return;
-
   if (processing.has(msg.id.id)) return;
+
   processing.add(msg.id.id);
-  setTimeout(() => processing.delete(msg.id.id), 15_000);
+  setTimeout(() => processing.delete(msg.id.id), 30_000);
 
   const senderNumber = msg.from;
   const isOwner      = senderNumber === MY_NUMBER;
@@ -84,39 +110,83 @@ client.on("message", async (msg) => {
     contact = getContact(senderNumber);
   }
 
-  // ── Foto ─────────────────────────────────────────────────
-  if (msg.hasMedia && (msg.type === "image" || msg.type === "video")) {
+  // ── Foto / Vídeo ──────────────────────────────────────────
+  // ── Localização compartilhada pelo WhatsApp ─────────────
+  if (msg.type === "location") {
     try {
-      const media    = await msg.downloadMedia();
-      const buffer   = Buffer.from(media.data, "base64");
-      const ext      = media.mimetype.split("/")[1] || "jpg";
-      const filepath = savePhoto(buffer, `foto.${ext}`);
-      const reply    = `salvo em ${filepath}`;
-      await persistMessage("user", "[foto]", senderNumber);
-      await persistMessage("nina", reply, senderNumber);
-      await sendReply(msg, senderNumber, reply);
-    } catch {
-      await sendReply(msg, senderNumber, "não consegui salvar a foto");
+      const lat = msg.location?.latitude  || msg.lat;
+      const lon = msg.location?.longitude || msg.lng;
+      if (lat && lon) {
+        const geo   = await updateLocationFromCoords(lat, lon);
+        const reply = `localização atualizada: ${geo.name}`;
+        await persist("user", "[localização]", senderNumber);
+        await persist("nina", reply, senderNumber);
+        await sendText(msg, senderNumber, reply);
+      }
+    } catch (err) {
+      console.error("[Location] Erro:", err.message);
     }
     return;
   }
 
-  if (!msg.body || msg.body.trim() === "") return;
+  if (msg.hasMedia && (msg.type === "image" || msg.type === "video")) {
+    try {
+      const media  = await msg.downloadMedia();
+      const buffer = Buffer.from(media.data, "base64");
+      const ext    = media.mimetype.split("/")[1] || "jpg";
+      const fp     = savePhoto(buffer, `foto.${ext}`);
+      const reply  = `salvo em ${fp}`;
+      await persist("user", "[foto]", senderNumber);
+      await persist("nina", reply, senderNumber);
+      await sendText(msg, senderNumber, reply);
+    } catch {
+      await sendText(msg, senderNumber, "não consegui salvar a foto");
+    }
+    return;
+  }
+
+  // ── Áudio (voz) ───────────────────────────────────────────
+  if (msg.hasMedia && (msg.type === "ptt" || msg.type === "audio")) {
+    try {
+      const media      = await msg.downloadMedia();
+      const transcript = await transcribeAudio(media);
+
+      if (!transcript) {
+        await sendText(msg, senderNumber, "não consegui transcrever o áudio");
+        return;
+      }
+
+      lastUserMessageAt = Date.now();
+      console.log(`\n[${contact?.name || senderNumber}] 🎤 "${transcript}"`);
+      await sendText(msg, senderNumber, `_"${transcript}"_`); // eco do que entendeu
+      await persist("user", transcript, senderNumber);
+      learnFromMessage(transcript, contact, senderNumber).catch(() => {});
+      handleReminderIfNeeded(transcript);
+
+      const reply = await askNina(transcript, contact, senderNumber).catch(() => "travei, manda de novo");
+      await persist("nina", reply, senderNumber);
+      await sendText(msg, senderNumber, reply);
+    } catch (err) {
+      console.error("[Audio] Erro:", err.message);
+      await sendText(msg, senderNumber, "erro ao processar áudio");
+    }
+    return;
+  }
+
+  if (!msg.body?.trim()) return;
 
   const userText = msg.body.trim();
+  lastUserMessageAt = Date.now();  // atualiza timestamp de atividade
   console.log(`\n[${contact?.name || senderNumber}] ${userText}`);
-  await persistMessage("user", userText, senderNumber);
-
+  await persist("user", userText, senderNumber);
   learnFromMessage(userText, contact, senderNumber).catch(() => {});
-
-  let reply;
 
   // ── Identificação de novo contato ─────────────────────────
   if (!contact && !isWaitingIdentification(senderNumber)) {
     markAskedIdentification(senderNumber);
-    reply = "oi, não te conheço ainda. quem é?";
-    await persistMessage("nina", reply, senderNumber);
-    await sendReply(msg, senderNumber, reply);
+    const reply = "oi, não te conheço ainda. quem é?";
+    await persist("nina", reply, senderNumber);
+    await sendText(msg, senderNumber, reply);
     return;
   }
 
@@ -124,9 +194,9 @@ client.on("message", async (msg) => {
     saveContact(senderNumber, userText.trim());
     clearPendingIdentification(senderNumber);
     contact = getContact(senderNumber);
-    reply   = `ok, ${userText.trim()}`;
-    await persistMessage("nina", reply, senderNumber);
-    await sendReply(msg, senderNumber, reply);
+    const reply = `ok, ${userText.trim()}`;
+    await persist("nina", reply, senderNumber);
+    await sendText(msg, senderNumber, reply);
     return;
   }
 
@@ -139,22 +209,20 @@ client.on("message", async (msg) => {
       pendingConfirmations.delete(senderNumber);
       const { runCommand } = require("./shell");
       const { output, error } = await runCommand(cmd, 60_000);
-      reply = error ? `erro: ${error}` : `\`\`\`\n${output}\n\`\`\``;
+      const reply = error ? `erro: ${error}` : `\`\`\`\n${output}\n\`\`\``;
+      await persist("nina", reply, senderNumber);
+      await sendText(msg, senderNumber, reply);
     } else {
       pendingConfirmations.delete(senderNumber);
-      reply = "cancelado";
+      await sendText(msg, senderNumber, "cancelado");
     }
-
-    await persistMessage("nina", reply, senderNumber);
-    await sendReply(msg, senderNumber, reply);
     return;
   }
 
-  // ── Lembrete direto (parser rápido como fallback) ─────────
-  // O modelo também pode criar lembretes via tool call
   handleReminderIfNeeded(userText);
 
-  // ── Resposta principal via function calling ───────────────
+  // ── Resposta principal ────────────────────────────────────
+  let reply;
   try {
     reply = await askNina(userText, contact, senderNumber);
   } catch (err) {
@@ -162,19 +230,69 @@ client.on("message", async (msg) => {
     reply = "travei aqui, manda de novo";
   }
 
-  // Detecta se o modelo pediu confirmação de comando perigoso
   if (reply.startsWith("⚠️ comando perigoso")) {
     const match = reply.match(/`([^`]+)`/);
     if (match) pendingConfirmations.set(senderNumber, match[1]);
   }
 
-  await persistMessage("nina", reply, senderNumber);
+  await persist("nina", reply, senderNumber);
   console.log(`[Nina] ${reply}`);
-  await sendReply(msg, senderNumber, reply);
+  await sendText(msg, senderNumber, reply);
 });
 
 client.on("auth_failure", (msg) => console.error("[Nina] Falha auth:", msg));
 client.on("disconnected",  (r)   => console.warn("[Nina] Desconectada:", r));
+
+// ── Watchdog: avisa quando reinicia ──────────────────────────
+// Se caiu e voltou, DG sabe que aconteceu
+
+const UPTIME_FILE = "./nina-last-start.json";
+const fs_wd = require("fs");
+
+function notifyRestart() {
+  try {
+    const now = Date.now();
+    if (fs_wd.existsSync(UPTIME_FILE)) {
+      const last = JSON.parse(fs_wd.readFileSync(UPTIME_FILE, "utf-8"));
+      const downtime = Math.round((now - last.ts) / 1000);
+      // Se ficou mais de 30s fora, avisa
+      if (downtime > 30) {
+        // Agenda o aviso pra depois do client estar pronto
+        setTimeout(() => {
+          if (_sendMessage) {
+            const mins = Math.round(downtime / 60);
+            const msg  = downtime < 120
+              ? `voltei. fiquei ${downtime}s fora.`
+              : `voltei. fiquei ${mins} minuto(s) fora.`;
+            _sendMessage(msg).catch(() => {});
+          }
+        }, 10000);
+      }
+    }
+    fs_wd.writeFileSync(UPTIME_FILE, JSON.stringify({ ts: now, pid: process.pid }));
+  } catch {}
+}
+
+// Também avisa se o processo vai morrer (SIGTERM do systemd)
+let _sendMessage = null; // referência pra função de envio
+process.on("SIGTERM", async () => {
+  console.log("[Nina] SIGTERM recebido — encerrando graciosamente");
+  try {
+    if (_sendMessage) await _sendMessage("encerrando por sinal do sistema. volto em instantes.");
+  } catch {}
+  process.exit(0);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[Nina] Erro não capturado:", err.message);
+  // Não derruba — deixa o systemd reiniciar se necessário
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[Nina] Promise rejeitada:", reason);
+});
+
+notifyRestart();
 
 console.log("[Nina] Inicializando...");
 client.initialize();
