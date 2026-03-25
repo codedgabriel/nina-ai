@@ -14,6 +14,11 @@ module.exports = {
     "37598747697245@lid"
   ],
 
+  // ── Ollama (aprendizado local em background) ──────────────
+  OLLAMA_URL:     process.env.OLLAMA_URL     || "http://127.0.0.1:11434/api/chat",
+  OLLAMA_MODEL:   process.env.OLLAMA_MODEL   || "llama3",
+  OLLAMA_TIMEOUT: parseInt(process.env.OLLAMA_TIMEOUT || "60000", 10),
+
   // ── Groq API (Whisper) ────────────────────────────────────
   GROQ_API_KEY: process.env.GROQ_API_KEY || "",
 

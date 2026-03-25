@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina v4 — Lembretes com suporte a terceiros
 //
@@ -58,7 +59,7 @@ function handleReminderIfNeeded(message) {
   const parsed = parseReminder(message);
   if (!parsed) return false;
   saveReminder(parsed.text, parsed.time);
-  console.log(`[Lembrete] Salvo: "${parsed.text}" às ${parsed.time}`);
+  log.info("Lembrete", `salvo: "${parsed.text}" às ${parsed.time}`);
   return parsed;
 }
 
@@ -108,7 +109,7 @@ function startReminderCron() {
             urgency:     "info",
             triggered_by: "cron",
           });
-          console.log(`[Lembrete] Enviado pra ${targetName}: "${text}"`);
+          log.info("Lembrete", `enviado → ${targetName}: "${text.slice(0, 60)}"`);
         } else {
           // Manda pro próprio DG
           if (_sendMessage) await _sendMessage(`🔔 ${text}`);
@@ -120,17 +121,17 @@ function startReminderCron() {
             urgency:     "info",
             triggered_by: "cron",
           });
-          console.log(`[Lembrete] Enviado pra DG: "${text}"`);
+          log.info("Lembrete", `enviado → DG: "${text.slice(0, 60)}"`);
         }
       } catch (err) {
-        console.error("[Lembrete] Erro ao enviar:", err.message);
+        log.error("Lembrete", err.message);
       }
 
       markReminderSent(reminder.id);
     }
   });
 
-  console.log("[Lembrete] Cron iniciado (com suporte a terceiros).");
+  log.info("Lembrete", "cron ativo");
 }
 
 module.exports = {

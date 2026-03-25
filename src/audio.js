@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina v4 — Transcrição de Áudio via Groq Whisper
 //  Groq é absurdamente rápido — transcreve em < 1s
@@ -16,7 +17,7 @@ const AUDIO_TMP_DIR = path.join(os.homedir(), "nina-files", "audio-tmp");
 fs.mkdirSync(AUDIO_TMP_DIR, { recursive: true });
 
 if (!GROQ_API_KEY) {
-  console.warn("[Audio] ⚠️  GROQ_API_KEY não definida. Transcrição de áudio desativada.");
+  log.warn("Audio", "GROQ_API_KEY não definida — transcrição desativada");
 }
 
 /**
@@ -29,6 +30,7 @@ async function transcribeAudio(media) {
   // Salva o buffer em disco (Groq precisa de um arquivo real)
   const ext      = media.mimetype.split("/")[1]?.split(";")[0] || "ogg";
   const tmpFile  = path.join(AUDIO_TMP_DIR, `audio_${Date.now()}.${ext}`);
+  const mp3File  = tmpFile.replace(new RegExp(`\\.${ext}$`), ".mp3");
   const buffer   = Buffer.from(media.data, "base64");
   fs.writeFileSync(tmpFile, buffer);
 
@@ -37,7 +39,6 @@ async function transcribeAudio(media) {
 
   try {
     // Tenta converter com ffmpeg se disponível (melhora compatibilidade)
-    const mp3File = tmpFile.replace(`.${ext}`, ".mp3");
     execSync(`ffmpeg -y -i "${tmpFile}" -ar 16000 -ac 1 "${mp3File}" 2>/dev/null`, { timeout: 15_000 });
     fileToSend = mp3File;
   } catch {
@@ -67,19 +68,16 @@ async function transcribeAudio(media) {
       ? res.data.trim()
       : res.data?.text?.trim();
 
-    console.log(`[Audio] Transcrito: "${transcript?.slice(0, 100)}"`);
+    log.info("Audio", `transcrito: "${transcript?.slice(0, 80)}"`);
     return transcript || null;
 
   } catch (err) {
-    console.error("[Audio] Erro Groq Whisper:", err.response?.data || err.message);
+    log.error("Audio", err.response?.data?.error?.message || err.message);
     return null;
   } finally {
     // Limpa arquivos temporários
     try { fs.unlinkSync(tmpFile); } catch {}
-    try {
-      const mp3 = tmpFile.replace(/\.\w+$/, ".mp3");
-      if (fs.existsSync(mp3)) fs.unlinkSync(mp3);
-    } catch {}
+    try { if (fs.existsSync(mp3File)) fs.unlinkSync(mp3File); } catch {}
   }
 }
 

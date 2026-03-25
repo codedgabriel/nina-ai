@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina v4 — Executor de Ferramentas (Agentic)
 // ============================================================
@@ -59,6 +60,10 @@ const {
   enqueue,
 }                                          = require("./notifications");
 const { buildMemoryContext }               = require("./memory");
+const {
+  improveFile, rollbackFile, listBackups,
+  getImprovementHistory, getSelfImproveStatus,
+}                                          = require("./self-improve");
 const { SCRIPTS_DIR, LOGS_DIR, SHELL_TIMEOUT, SCRIPT_TIMEOUT } = require("./config");
 
 // Garante que as pastas existam
@@ -89,7 +94,7 @@ let _sendProgress = null;
 function setSendProgress(fn) { _sendProgress = fn; }
 
 async function executeTool(toolName, toolArgs, context = {}) {
-  console.log(`[Tool] ${toolName}`, JSON.stringify(toolArgs).slice(0, 200));
+  log.debug("Tool", `${toolName} ${JSON.stringify(toolArgs).slice(0, 150)}`);
 
   try {
     switch (toolName) {
@@ -731,21 +736,14 @@ async function executeTool(toolName, toolArgs, context = {}) {
 
       // ── Self-improvement ──────────────────────────────────────
       case "improve_self": {
-        const { file, instruction } = toolArgs;
-
-        // Avisa que vai demorar
-        const { fromNumber } = context;
-        try {
-          const { sendText } = require("./sender");
-          // Não temos msg aqui, mas podemos logar
-        } catch {}
-
-        console.log(`[Self-improve] Iniciando: ${file} — ${instruction}`);
-        const result = await improveFile(file, instruction);
-        return result;
+        const { file, instruction, dry_run = false, skip_idle_check = false } = toolArgs;
+        if (!file || !instruction) return "erro: 'file' e 'instruction' são obrigatórios";
+        log.info("Improve", `${file} — ${instruction.slice(0, 80)}`);
+        return await improveFile(file, instruction, { dryRun: dry_run, skipIdleCheck: skip_idle_check });
       }
 
       case "rollback_self": {
+        if (!toolArgs.file) return "erro: 'file' é obrigatório";
         return await rollbackFile(toolArgs.file);
       }
 
@@ -755,6 +753,10 @@ async function executeTool(toolName, toolArgs, context = {}) {
 
       case "get_improvement_history": {
         return getImprovementHistory(toolArgs.limit || 10);
+      }
+
+      case "self_improve_status": {
+        return getSelfImproveStatus();
       }
 
       // ── IoT ──────────────────────────────────────────────────
@@ -915,7 +917,11 @@ async function executeTool(toolName, toolArgs, context = {}) {
     }
 
   } catch (err) {
-    console.error(`[Tool] Erro em ${toolName}:`, err.message);
+    log.error("Tool", `${toolName}: ${err.message}`);
+    try {
+      const { trackError } = require("./self-improve");
+      trackError(toolName, err.message);
+    } catch {}
     return `Erro ao executar ${toolName}: ${err.message}`;
   }
 }

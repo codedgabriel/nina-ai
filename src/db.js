@@ -7,12 +7,6 @@ const { DB_PATH } = require("./config");
 
 const db = new Database(DB_PATH);
 
-// Migração: adiciona colunas novas se não existirem
-try {
-  db.exec("ALTER TABLE reminders ADD COLUMN target_number TEXT");
-  db.exec("ALTER TABLE reminders ADD COLUMN target_name TEXT");
-} catch {} // ignora se já existir
-
 db.exec(`
   CREATE TABLE IF NOT EXISTS messages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +51,10 @@ db.exec(`
       VALUES (new.id, new.role, new.content, new.from_number);
     END;
 `);
+
+// Migração segura: colunas adicionadas APÓS garantir que a tabela existe
+try { db.exec("ALTER TABLE reminders ADD COLUMN target_number TEXT"); } catch {}
+try { db.exec("ALTER TABLE reminders ADD COLUMN target_name TEXT");   } catch {}
 
 // ── Mensagens ────────────────────────────────────────────────
 

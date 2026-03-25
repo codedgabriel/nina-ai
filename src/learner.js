@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina — Aprendizado Automático de Fatos
 //  Roda em background após cada mensagem recebida
@@ -74,12 +75,12 @@ Respond with ONLY valid JSON, nothing else. Example: {"hobby": "lê manhwa", "go
     const profileStr     = JSON.stringify(updatedProfile);
 
     saveContact(fromNumber, name, profileStr);
-    console.log(`[Learner] Aprendi sobre ${name}:`, facts);
+    log.debug("Learner", `${name}: ${JSON.stringify(facts)}`);
 
   } catch (err) {
     // Silencioso — aprendizado em background não deve quebrar nada
     if (!err.message.includes("timeout")) {
-      console.error("[Learner] Erro:", err.message);
+      log.warn("Learner", err.message);
     }
   }
 }

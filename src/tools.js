@@ -1200,10 +1200,10 @@ Exemplos de registro:
       description: `Melhora o próprio código da Nina com segurança total.
 Pipeline automático:
 1. Lê o arquivo + arquivos dependentes (contexto completo)
-2. Gera a melhoria com DeepSeek
-3. Valida sintaxe, exports e dependências
+2. Gera a melhoria com DeepSeek (até 3 tentativas com estratégias diferentes)
+3. Valida sintaxe, exports, tamanho mínimo, estrutura e dependências
 4. Faz backup automático com timestamp
-5. Aplica a mudança
+5. Aplica a mudança e verifica de novo no arquivo real
 6. Se qualquer passo falhar → rollback automático
 
 Use para: adicionar funcionalidades, corrigir bugs, otimizar código, melhorar logs.
@@ -1213,15 +1213,27 @@ Exemplos de instruções:
 - "adiciona verificação de temperatura da CPU no checkResources"
 - "melhora o log de notificações pra incluir o timestamp formatado"
 - "adiciona retry com backoff exponencial no checkEmailWatcher"
-- "otimiza o buildMemoryContext pra não buscar quando a mensagem tem menos de 5 chars"`,
+- "otimiza o buildMemoryContext pra não buscar quando a mensagem tem menos de 5 chars"
+- "corrige o erro recorrente de timeout no transcribeAudio"`,
       parameters: {
         type: "object",
         properties: {
-          file:        { type: "string", description: "Nome do arquivo a melhorar (ex: monitor.js, memory.js)" },
-          instruction: { type: "string", description: "O que melhorar — seja específico e descritivo" },
+          file:             { type: "string",  description: "Nome do arquivo a melhorar (ex: monitor.js, memory.js)" },
+          instruction:      { type: "string",  description: "O que melhorar — seja específico e descritivo" },
+          dry_run:          { type: "boolean", description: "Se true, apenas mostra o que mudaria sem aplicar nada (padrão: false)" },
+          skip_idle_check:  { type: "boolean", description: "Se true, aplica mesmo com usuário ativo (padrão: false — espera 2 min de inatividade)" },
         },
         required: ["file", "instruction"],
       },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "self_improve_status",
+      description: "Status do sistema de auto-melhoria: histórico, módulos com erros recentes, se está pronto para melhorar.",
+      parameters: { type: "object", properties: {} },
     },
   },
 

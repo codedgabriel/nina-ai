@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina v4 — Watchers Customizáveis
 //
@@ -26,8 +27,8 @@ let _send = null;
 function setWatcherSender(fn) { _send = fn; }
 
 function notify(text) {
-  if (_send) _send(text).catch((e) => console.error("[Watcher] notify err:", e.message));
-  console.log(`[Watcher] → ${text.slice(0, 100)}`);
+  if (_send) _send(text).catch((e) => log.error("Watcher", String("[Watcher] notify err:", e.message));
+  log.info("Watcher", `→ ${text.slice(0, 100)}`);
 }
 
 // ── Armazenamento em memória + persistência JSON ──────────────
@@ -98,7 +99,7 @@ A condição foi atingida?`,
     if (!m) return { triggered: false };
     return JSON.parse(m[0]);
   } catch (err) {
-    console.error("[Watcher] aiEvaluate error:", err.message);
+    log.error("Watcher", String("[Watcher] aiEvaluate error:", err.message);
     return { triggered: false };
   }
 }
@@ -167,7 +168,7 @@ async function runWatcher(watcher) {
       default:        currentValue = await checkCommand(watcher);
     }
   } catch (err) {
-    console.error(`[Watcher:${watcher.id}] Erro ao coletar:`, err.message);
+    log.error("Watcher", String(`[Watcher:${watcher.id}] Erro ao coletar:`, err.message);
     return;
   }
 
@@ -306,13 +307,13 @@ function scheduleWatcher(watcher) {
   try {
     const job = cron.schedule(watcher.cronExpr, () => {
       runWatcher(watcher).catch((e) =>
-        console.error(`[Watcher:${watcher.id}] Erro:`, e.message)
+        log.error("Watcher", String(`[Watcher:${watcher.id}] Erro:`, e.message)
       );
     });
     cronJobs.set(watcher.id, job);
-    console.log(`[Watcher] "${watcher.description}" agendado (${watcher.interval})`);
+    log.info("Watcher", `"${watcher.description}" agendado (${watcher.interval})`);
   } catch (err) {
-    console.error(`[Watcher] Erro ao agendar ${watcher.id}:`, err.message);
+    log.error("Watcher", String(`[Watcher] Erro ao agendar ${watcher.id}:`, err.message);
   }
 }
 
@@ -329,7 +330,7 @@ function stopWatcher(id) {
 function startWatchers() {
   const active = watchers.filter((w) => w.active);
   for (const w of active) scheduleWatcher(w);
-  console.log(`[Watchers] ${active.length} watcher(s) carregado(s)`);
+  log.info("Watchers", `${active.length} watcher(s) carregado(s)`);
 }
 
 module.exports = {

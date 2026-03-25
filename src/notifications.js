@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina v4 — Notificações Inteligentes
 //
@@ -123,14 +124,14 @@ async function enqueue(message, opts = {}) {
     await dispatch(entry, false);
   }
 
-  console.log(`[Notify] [${urgency}] ${message.slice(0, 80)}`);
+  log.info("Notify", `[${urgency}] ${message.slice(0, 80)}`);
 }
 
 async function dispatch(entry, isUrgent = false) {
   if (!_send) return;
   const prefix = isUrgent ? "URGENTE: " : "";
   await _send(`${prefix}${entry.message}`).catch(
-    (e) => console.error("[Notify] dispatch err:", e.message)
+    (e) => log.error("Notify", String("[Notify] dispatch err:", e.message)
   );
 }
 
@@ -201,7 +202,7 @@ async function checkUpcomingEvents() {
       }
     }
   } catch (err) {
-    console.error("[Notify] checkUpcomingEvents:", err.message);
+    log.error("Notify", String("[Notify] checkUpcomingEvents:", err.message);
   }
 }
 
@@ -286,7 +287,7 @@ function startNotifications() {
     checkWeatherForEvents().catch(console.error);
   });
 
-  console.log("[Notify] Sistema de notificações inteligentes ativo.");
+  log.info("Notify", "sistema ativo");
 }
 
 module.exports = {

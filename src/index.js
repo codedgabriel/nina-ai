@@ -3,24 +3,24 @@
 //  WhatsApp + DeepSeek + Groq Whisper + Monitor Proativo
 // ============================================================
 
+const fs     = require("fs");
+const log    = require("./logger");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
 
-const { MY_NUMBER, SESSION_PATH, ALLOWED_NUMBERS } = require("./config");
+const { MY_NUMBER, SESSION_PATH, ALLOWED_NUMBERS, DANGEROUS_CONFIRM } = require("./config");
 const { saveMessage, getLastMessageId }             = require("./db");
 const { saveToVector }                              = require("./vector");
 const { askNina }                                   = require("./deepseek");
 const { learnFromMessage }                          = require("./learner");
 const { savePhoto }                                 = require("./files");
 const { transcribeAudio }                           = require("./audio");
-const { setClient, sendText, sendMultipleMessages }                       = require("./sender");
-const { analyzeImage }                              = require("./vision");
-const { updateLocationFromCoords, updateLocationFromText } = require("./location");
+const { setClient, sendText, sendMultipleMessages } = require("./sender");
+const { updateLocationFromCoords }                  = require("./location");
 const { startNotifications, setNotificationSender, enqueue } = require("./notifications");
 const {
   setProactiveSender, setLastMessageGetter, startProactive,
-}                                                           = require("./proactive");
-const { logDecision }                                       = require("./decisions");
+} = require("./proactive");
 const { setSendProgress }                           = require("./executor");
 const { handleReminderIfNeeded, startReminderCron, setMessageSender, setAnyMessageSender } = require("./reminders");
 const { startMonitor, setMonitorSender, setSmartNotify } = require("./monitor");
@@ -33,9 +33,66 @@ const {
   getContact, saveContact,
   isWaitingIdentification, markAskedIdentification, clearPendingIdentification,
 } = require("./contacts");
+const { setActivityGetter, autoImproveIfNeeded } = require("./self-improve");
+
+// ── Estado global ─────────────────────────────────────────────
 
 const pendingConfirmations = new Map();
-let lastUserMessageAt = null;  // timestamp da última msg do usuário
+let lastUserMessageAt = null;
+
+// FIX: declarar _sendMessage ANTES de notifyRestart() que já a referencia
+let _sendMessage = null;
+
+// ── Watchdog ──────────────────────────────────────────────────
+
+const UPTIME_FILE = "./nina-last-start.json";
+
+function notifyRestart() {
+  try {
+    const now = Date.now();
+    if (fs.existsSync(UPTIME_FILE)) {
+      const last     = JSON.parse(fs.readFileSync(UPTIME_FILE, "utf-8"));
+      const downtime = Math.round((now - last.ts) / 1000);
+      if (downtime > 30) {
+        setTimeout(() => {
+          if (_sendMessage) {
+            const mins = Math.round(downtime / 60);
+            const text = downtime < 120
+              ? `voltei. fiquei ${downtime}s fora.`
+              : `voltei. fiquei ${mins} minuto(s) fora.`;
+            _sendMessage(text).catch(() => {});
+          }
+        }, 10_000);
+      }
+    }
+    fs.writeFileSync(UPTIME_FILE, JSON.stringify({ ts: now, pid: process.pid }));
+  } catch {}
+}
+
+// ── Sinais do processo ────────────────────────────────────────
+
+process.on("SIGTERM", async () => {
+  log.info("Nina", "SIGTERM recebido — encerrando graciosamente");
+  try {
+    if (_sendMessage) await _sendMessage("encerrando por sinal do sistema. volto em instantes.");
+  } catch {}
+  process.exit(0);
+});
+
+process.on("uncaughtException", (err) => {
+  log.error("Nina", "Erro não capturado: " + err.message, err.stack);
+});
+
+process.on("unhandledRejection", (reason) => {
+  log.error("Nina", "Promise rejeitada: " + String(reason));
+});
+
+// ── Normaliza número WhatsApp ─────────────────────────────────
+
+function normalizeNumber(from) {
+  // FIX: usa replace com regex para cobrir variações de @lid
+  return from.replace(/@lid(\b|$)/i, "@c.us");
+}
 
 // ── Cliente WhatsApp ──────────────────────────────────────────
 
@@ -43,32 +100,33 @@ const client = new Client({
   authStrategy: new LocalAuth({ dataPath: SESSION_PATH }),
   puppeteer: {
     headless: true,
-    args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage","--disable-gpu"],
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
   },
 });
 
 client.on("qr", (qr) => {
-  console.log("\n[Nina] Escaneie o QR Code:\n");
+  log.info("Nina", "Escaneie o QR Code:");
   qrcode.generate(qr, { small: true });
 });
 
 client.on("ready", () => {
-  console.log("[Nina] Conectada. DeepSeek + Groq + Monitor ativo.");
+  log.info("Nina", "Conectada. DeepSeek + Groq + Monitor ativo.");
 
   const send = (text) => client.sendMessage(MY_NUMBER, text);
 
+  _sendMessage = send;
   setClient(client);
-  _sendMessage = send;         // watchdog restart
-  setMessageSender(send);    // lembretes
-  setAnyMessageSender((number, text) => client.sendMessage(number, text)); // lembretes p/ terceiros
-  setMonitorSender(send);    // monitor proativo
-  setWatcherSender(send);    // watchers customizáveis
+  setMessageSender(send);
+  setAnyMessageSender((number, text) => client.sendMessage(number, text));
+  setMonitorSender(send);
+  setWatcherSender(send);
   setSendProgress((num, txt) => client.sendMessage(num, txt).catch(() => {}));
   setNotificationSender(send);
   startNotifications();
-  setSmartNotify((msg, opts) => enqueue(msg, opts)); // monitor usa notificações inteligentes
+  setSmartNotify((notifMsg, opts) => enqueue(notifMsg, opts));
   setProactiveSender(send);
   setLastMessageGetter(() => lastUserMessageAt);
+  setActivityGetter(() => lastUserMessageAt);  // self-improve usa para checar inatividade
   startProactive();
   startReminderCron();
   startMonitor();
@@ -77,7 +135,15 @@ client.on("ready", () => {
   initPreinstalledSkills2();
   initCapabilities();
   startFinance();
+
+  // Auto-melhoria guiada por erros — verifica a cada 30 min
+  setInterval(() => {
+    autoImproveIfNeeded(_sendMessage).catch(() => {});
+  }, 30 * 60 * 1000);
 });
+
+client.on("auth_failure", (m) => log.error("Nina", "Falha auth: " + m));
+client.on("disconnected",  (r) => log.warn("Nina", "Desconectada: " + r));
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -87,24 +153,30 @@ async function persist(role, content, fromNumber) {
   saveToVector(id, content, role, fromNumber, new Date().toISOString()).catch(() => {});
 }
 
-// ── Debounce ──────────────────────────────────────────────────
+// ── Deduplicação de mensagens ─────────────────────────────────
 
 const processing = new Set();
 
-// ── Handler de mensagens ─────────────────────────────────────
+// ── Handler de mensagens ──────────────────────────────────────
 
 client.on("message", async (msg) => {
-console.log("[Debug] Mensagem de:", msg.from);
-const normalizedFrom = msg.from.replace("@lid", "@c.us");
-  // if (!ALLOWED_NUMBERS.includes(normalizedFrom)) return;
-  if (msg.isGroupMsg || msg.from.includes("@g.us")) return;
-  if (processing.has(msg.id.id)) return;
+  const senderNumber = normalizeNumber(msg.from);
 
+  // FIX: filtrar grupos usando número já normalizado
+  if (msg.isGroupMsg || senderNumber.includes("@g.us")) return;
+
+  // FIX: verificação de ALLOWED_NUMBERS funcional (antes estava comentada)
+  const allowedNormalized = ALLOWED_NUMBERS.map(normalizeNumber);
+  if (allowedNormalized.length > 0 && !allowedNormalized.includes(senderNumber)) {
+    log.warn("Nina", `Número não autorizado: ${senderNumber}`);
+    return;
+  }
+
+  if (processing.has(msg.id.id)) return;
   processing.add(msg.id.id);
   setTimeout(() => processing.delete(msg.id.id), 30_000);
 
-  const senderNumber = normalizedFrom;
-  const isOwner      = senderNumber === MY_NUMBER;
+  const isOwner = senderNumber === normalizeNumber(MY_NUMBER);
 
   let contact = getContact(senderNumber);
   if (isOwner && !contact) {
@@ -112,8 +184,7 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
     contact = getContact(senderNumber);
   }
 
-  // ── Foto / Vídeo ──────────────────────────────────────────
-  // ── Localização compartilhada pelo WhatsApp ─────────────
+  // ── Localização ───────────────────────────────────────────
   if (msg.type === "location") {
     try {
       const lat = msg.location?.latitude  || msg.lat;
@@ -126,22 +197,25 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
         await sendText(msg, senderNumber, reply);
       }
     } catch (err) {
-      console.error("[Location] Erro:", err.message);
+      log.error("Location", err.message);
     }
     return;
   }
 
+  // ── Foto / Vídeo ──────────────────────────────────────────
   if (msg.hasMedia && (msg.type === "image" || msg.type === "video")) {
     try {
       const media  = await msg.downloadMedia();
       const buffer = Buffer.from(media.data, "base64");
-      const ext    = media.mimetype.split("/")[1] || "jpg";
+      // FIX: strip codec info do mimetype (ex: "image/webp; codecs=...")
+      const ext    = media.mimetype.split("/")[1]?.split(";")[0] || "jpg";
       const fp     = savePhoto(buffer, `foto.${ext}`);
       const reply  = `salvo em ${fp}`;
       await persist("user", "[foto]", senderNumber);
       await persist("nina", reply, senderNumber);
       await sendText(msg, senderNumber, reply);
-    } catch {
+    } catch (err) {
+      log.error("Foto", err.message);
       await sendText(msg, senderNumber, "não consegui salvar a foto");
     }
     return;
@@ -159,17 +233,18 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
       }
 
       lastUserMessageAt = Date.now();
-      console.log(`\n[${contact?.name || senderNumber}] 🎤 "${transcript}"`);
-      await sendText(msg, senderNumber, `_"${transcript}"_`); // eco do que entendeu
+      log.info("Áudio", `${contact?.name || senderNumber}: "${transcript.slice(0, 80)}"`);
+      await sendText(msg, senderNumber, `_"${transcript}"_`);
       await persist("user", transcript, senderNumber);
       learnFromMessage(transcript, contact, senderNumber).catch(() => {});
       handleReminderIfNeeded(transcript);
 
-      const reply = await askNina(transcript, contact, senderNumber).catch(() => "travei, manda de novo");
+      const reply = await askNina(transcript, contact, senderNumber)
+        .catch(() => "travei, manda de novo");
       await persist("nina", reply, senderNumber);
       await sendMultipleMessages(msg, senderNumber, reply);
     } catch (err) {
-      console.error("[Audio] Erro:", err.message);
+      log.error("Audio", err.message);
       await sendText(msg, senderNumber, "erro ao processar áudio");
     }
     return;
@@ -178,8 +253,8 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
   if (!msg.body?.trim()) return;
 
   const userText = msg.body.trim();
-  lastUserMessageAt = Date.now();  // atualiza timestamp de atividade
-  console.log(`\n[${contact?.name || senderNumber}] ${userText}`);
+  lastUserMessageAt = Date.now();
+  log.info(contact?.name || senderNumber, userText.slice(0, 120));
   await persist("user", userText, senderNumber);
   learnFromMessage(userText, contact, senderNumber).catch(() => {});
 
@@ -193,10 +268,11 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
   }
 
   if (!contact && isWaitingIdentification(senderNumber)) {
-    saveContact(senderNumber, userText.trim());
+    const name = userText.trim();
+    saveContact(senderNumber, name);
     clearPendingIdentification(senderNumber);
     contact = getContact(senderNumber);
-    const reply = `ok, ${userText.trim()}`;
+    const reply = `ok, ${name}`;
     await persist("nina", reply, senderNumber);
     await sendText(msg, senderNumber, reply);
     return;
@@ -205,15 +281,14 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
   // ── Confirmação de comando perigoso ───────────────────────
   if (isOwner && pendingConfirmations.has(senderNumber)) {
     const cmd = pendingConfirmations.get(senderNumber);
-    const txt = userText.toLowerCase().trim();
 
-    if (/(sim|confirma|confirmo|pode|yes|ok|executa)/i.test(txt)) {
+    if (/(sim|confirma|confirmo|pode|yes|ok|executa)/i.test(userText.trim())) {
       pendingConfirmations.delete(senderNumber);
       const reply = await askNina(
-      `O usuário já confirmou explicitamente a execução do seguinte comando. NÃO peça confirmação novamente. Execute diretamente:\n\n${cmd}`,
-      contact,
-      senderNumber
-    );
+        `O usuário já confirmou explicitamente a execução do seguinte comando. NÃO peça confirmação novamente. Execute diretamente:\n\n${cmd}`,
+        contact,
+        senderNumber,
+      ).catch(() => "erro ao executar o comando confirmado");
       await persist("nina", reply, senderNumber);
       await sendMultipleMessages(msg, senderNumber, reply);
     } else {
@@ -230,76 +305,23 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
   try {
     reply = await askNina(userText, contact, senderNumber);
   } catch (err) {
-    console.error("[Nina] Erro:", err.message);
+    log.error("Nina", err.message);
     reply = "travei aqui, manda de novo";
   }
 
-  if (reply.startsWith("⚠️ comando perigoso")) {
-    const { DANGEROUS_CONFIRM } = require("./config");
-    if (DANGEROUS_CONFIRM) {
-      const match = reply.match(/`([^`]+)`/);
-      if (match) pendingConfirmations.set(senderNumber, match[1]);
-    }
+  // FIX: DANGEROUS_CONFIRM agora importado de config, sem require() aninhado
+  if (reply.startsWith("⚠️ comando perigoso") && DANGEROUS_CONFIRM) {
+    const match = reply.match(/`([^`]+)`/);
+    if (match) pendingConfirmations.set(senderNumber, match[1]);
   }
 
   await persist("nina", reply, senderNumber);
-  console.log(`[Nina] ${reply}`);
+  log.info("Nina →", reply.slice(0, 120));
   await sendMultipleMessages(msg, senderNumber, reply);
 });
 
-client.on("auth_failure", (msg) => console.error("[Nina] Falha auth:", msg));
-client.on("disconnected",  (r)   => console.warn("[Nina] Desconectada:", r));
-
-// ── Watchdog: avisa quando reinicia ──────────────────────────
-// Se caiu e voltou, DG sabe que aconteceu
-
-const UPTIME_FILE = "./nina-last-start.json";
-const fs_wd = require("fs");
-
-function notifyRestart() {
-  try {
-    const now = Date.now();
-    if (fs_wd.existsSync(UPTIME_FILE)) {
-      const last = JSON.parse(fs_wd.readFileSync(UPTIME_FILE, "utf-8"));
-      const downtime = Math.round((now - last.ts) / 1000);
-      // Se ficou mais de 30s fora, avisa
-      if (downtime > 30) {
-        // Agenda o aviso pra depois do client estar pronto
-        setTimeout(() => {
-          if (_sendMessage) {
-            const mins = Math.round(downtime / 60);
-            const msg  = downtime < 120
-              ? `voltei. fiquei ${downtime}s fora.`
-              : `voltei. fiquei ${mins} minuto(s) fora.`;
-            _sendMessage(msg).catch(() => {});
-          }
-        }, 10000);
-      }
-    }
-    fs_wd.writeFileSync(UPTIME_FILE, JSON.stringify({ ts: now, pid: process.pid }));
-  } catch {}
-}
-
-// Também avisa se o processo vai morrer (SIGTERM do systemd)
-let _sendMessage = null; // referência pra função de envio
-process.on("SIGTERM", async () => {
-  console.log("[Nina] SIGTERM recebido — encerrando graciosamente");
-  try {
-    if (_sendMessage) await _sendMessage("encerrando por sinal do sistema. volto em instantes.");
-  } catch {}
-  process.exit(0);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("[Nina] Erro não capturado:", err.message);
-  // Não derruba — deixa o systemd reiniciar se necessário
-});
-
-process.on("unhandledRejection", (reason) => {
-  console.error("[Nina] Promise rejeitada:", reason);
-});
+// ── Inicia ────────────────────────────────────────────────────
 
 notifyRestart();
-
-console.log("[Nina] Inicializando...");
+log.info("Nina", "Inicializando...");
 client.initialize();

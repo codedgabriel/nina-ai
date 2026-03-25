@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina v4 — Resposta Proativa a Contexto
 //
@@ -103,7 +104,7 @@ async function sendProactive(message, reason, urgency = "info") {
   state.contactsToday++;
 
   await _send(message).catch((e) =>
-    console.error("[Proactive] Erro ao enviar:", e.message)
+    log.error("Proactive", String("[Proactive] Erro ao enviar:", e.message)
   );
 
   logDecision({
@@ -114,7 +115,7 @@ async function sendProactive(message, reason, urgency = "info") {
     triggered_by: "autonomous",
   });
 
-  console.log(`[Proactive] Enviado: ${message.slice(0, 80)}`);
+  log.info("Proactive", `enviado: ${message.slice(0, 80)}`);
 }
 
 // ── Consulta IA pra decidir se deve contactar ─────────────────
@@ -321,7 +322,7 @@ function startProactive() {
     checkBrokenPattern().catch(console.error);
   });
 
-  console.log("[Proactive] Sistema de resposta proativa ativo.");
+  log.info("Proactive", "sistema ativo");
 }
 
 module.exports = {

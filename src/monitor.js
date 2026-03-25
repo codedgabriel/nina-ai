@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina v4 — Monitor Proativo
 //
@@ -115,22 +116,22 @@ async function checkEmailWatcher(w) {
     notify(`email watcher "${w.description}":\n${preview}`);
 
   } catch (err) {
-    console.error(`[EmailWatcher:${w.id}] Erro:`, err.message);
+    log.error("EmailWatcher", `${w.id}: ${err.message}`);
   }
 }
 
 function scheduleEmailWatcher(w) {
   if (!w.active) return;
   const job = cron.schedule(intervalToCronEmail(w.interval), () => {
-    checkEmailWatcher(w).catch(console.error);
+    checkEmailWatcher(w).catch((e) => log.error("Monitor", e.message));
   });
   emailCronJobs.set(w.id, job);
-  console.log(`[EmailWatcher] "${w.description}" agendado (${w.interval})`);
+  log.info("EmailWatcher", `"${w.description}" agendado (${w.interval})`);
 }
 
 function startEmailWatchers() {
   emailWatchers.filter((w) => w.active).forEach(scheduleEmailWatcher);
-  console.log(`[EmailWatcher] ${emailWatchers.length} watcher(s) de email carregado(s)`);
+  log.info("EmailWatcher", `${emailWatchers.length} watcher(s) carregado(s)`);
 }
 
 function setMonitorSender(fn) { _send = fn; }
@@ -139,12 +140,12 @@ function notify(text, urgency = null) {
   if (_smartNotify) {
     // Rota pelo sistema inteligente — respeita quiet hours e urgência
     _smartNotify(text, { urgency, source: "monitor", skipAI: !!urgency }).catch(
-      (e) => console.error("[Monitor] smartNotify err:", e.message)
+      (e) => log.error("Monitor", `smartNotify: ${e.message}`)
     );
   } else if (_send) {
     _send(text).catch((e) => console.error("[Monitor] notify err:", e.message));
   }
-  console.log(`[Monitor] → ${text.slice(0, 120)}`);
+  log.info("Monitor", text.slice(0, 100));
   actionLog.push({ ts: new Date().toISOString(), text });
 }
 
@@ -410,10 +411,10 @@ async function midnightSummary() {
     const msgs = getMessagesByNumber(MY_NUMBER, 60);
     if (msgs.length > 5) {
       await generateDailySummary(MY_NUMBER, msgs);
-      console.log("[Monitor] Resumo diário gerado para memória de longo prazo.");
+      log.info("Monitor", "resumo diário salvo");
     }
   } catch (err) {
-    console.error("[Monitor] Erro no resumo meia-noite:", err.message);
+    log.error("Monitor", `resumo meia-noite: ${err.message}`);
   }
 }
 
@@ -447,15 +448,15 @@ async function checkIoTDevices() {
 }
 
 function startMonitor() {
-  cron.schedule("*/5 * * * *",  () => checkResources().catch(console.error));
-  cron.schedule("*/5 * * * *",  () => checkIoTDevices().catch(console.error));
-  cron.schedule("*/2 * * * *",  () => checkServices().catch(console.error));
-  cron.schedule("0 3 * * *",    () => proactiveOptimize().catch(console.error));
-  cron.schedule("0 8 * * *",    () => dailySummary().catch(console.error));
-  cron.schedule("55 23 * * *",  () => midnightSummary().catch(console.error)); // 23h55
+  cron.schedule("*/5 * * * *",  () => checkResources().catch((e) => log.error("Monitor", e.message)));
+  cron.schedule("*/5 * * * *",  () => checkIoTDevices().catch((e) => log.error("Monitor", e.message)));
+  cron.schedule("*/2 * * * *",  () => checkServices().catch((e) => log.error("Monitor", e.message)));
+  cron.schedule("0 3 * * *",    () => proactiveOptimize().catch((e) => log.error("Monitor", e.message)));
+  cron.schedule("0 8 * * *",    () => dailySummary().catch((e) => log.error("Monitor", e.message)));
+  cron.schedule("55 23 * * *",  () => midnightSummary().catch((e) => log.error("Monitor", e.message))); // 23h55
 
   startEmailWatchers();
-  console.log("[Monitor] Ativo — recursos(5min) | serviços(2min) | otimização(3h) | resumo(8h) | memória(23h55)");
+  log.info("Monitor", "Ativo — recursos(5min) | serviços(2min) | otimização(3h) | resumo(8h) | memória(23h55)");
 }
 
 module.exports = { startMonitor, setMonitorSender, setSmartNotify, getMonitorStatus, runOptimizationNow, addEmailWatcher, removeEmailWatcher, listEmailWatchers };

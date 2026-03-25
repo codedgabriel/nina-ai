@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina v4 — Memória Contínua e Automática
 //
@@ -125,10 +126,10 @@ async function generateDailySummary(fromNumber, messagesOfDay) {
     if (summary) {
       const date = new Date().toISOString().slice(0, 10);
       saveNote(`Resumo ${date}`, summary, null);
-      console.log(`[Memory] Resumo do dia ${date} salvo.`);
+      log.info("Memory", `resumo ${date} salvo`);
     }
   } catch (err) {
-    console.error("[Memory] Erro ao gerar resumo:", err.message);
+    log.error("Memory", `erro ao gerar resumo: ${err.message}`);
   }
 }
 
@@ -152,12 +153,12 @@ function getRecentSummaries(days = 5) {
 // Chamada pelo deepseek.js antes de cada resposta
 
 async function buildMemoryContext(userMessage, fromNumber, contact = null) {
-  const [semanticMemory, summaries] = await Promise.all([
+  // Executa em paralelo para não bloquear a resposta
+  const [semanticMemory, summaries, facts] = await Promise.all([
     recallRelevantMemory(userMessage, fromNumber),
     Promise.resolve(getRecentSummaries(3)),
+    Promise.resolve(buildFactsBlock(contact)),
   ]);
-
-  const facts = buildFactsBlock(contact);
 
   return { semanticMemory, summaries, facts };
 }

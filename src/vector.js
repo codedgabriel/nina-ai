@@ -1,3 +1,4 @@
+const log = require("./logger");
 // ============================================================
 //  Nina — Cliente da Memória Vetorial (ChromaDB via HTTP)
 // ============================================================
@@ -15,10 +16,10 @@ async function isAvailable() {
   if (_available !== null && (now - _lastCheck) < 60_000) return _available;
   try {
     await axios.get(`${MEMORY_URL}/health`, { timeout: 3_000 });
-    if (!_available) console.log("[Vector] Memória vetorial disponível.");
+    if (!_available) log.info("Vector", "memória vetorial disponível");
     _available = true;
   } catch {
-    if (_available !== false) console.warn("[Vector] Memória vetorial indisponível — usando SQLite.");
+    if (_available !== false) log.warn("Vector", "indisponível — usando SQLite");
     _available = false;
   }
   _lastCheck = now;
@@ -34,7 +35,7 @@ async function saveToVector(id, text, role, fromNumber, createdAt) {
       created_at:  createdAt,
     }, { timeout: TIMEOUT });
   } catch (err) {
-    console.error("[Vector] Erro ao salvar:", err.message);
+    log.error("Vector", `salvar: ${err.message}`);
   }
 }
 
@@ -46,7 +47,7 @@ async function searchVector(query, fromNumber = null, limit = 5) {
     }, { timeout: TIMEOUT });
     return res.data?.results || [];
   } catch (err) {
-    console.error("[Vector] Erro na busca:", err.message);
+    log.error("Vector", `busca: ${err.message}`);
     return [];
   }
 }
