@@ -13,7 +13,7 @@ const { askNina }                                   = require("./deepseek");
 const { learnFromMessage }                          = require("./learner");
 const { savePhoto }                                 = require("./files");
 const { transcribeAudio }                           = require("./audio");
-const { setClient, sendText }                       = require("./sender");
+const { setClient, sendText, sendMultipleMessages }                       = require("./sender");
 const { analyzeImage }                              = require("./vision");
 const { updateLocationFromCoords, updateLocationFromText } = require("./location");
 const { startNotifications, setNotificationSender, enqueue } = require("./notifications");
@@ -167,7 +167,7 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
 
       const reply = await askNina(transcript, contact, senderNumber).catch(() => "travei, manda de novo");
       await persist("nina", reply, senderNumber);
-      await sendText(msg, senderNumber, reply);
+      await sendMultipleMessages(msg, senderNumber, reply);
     } catch (err) {
       console.error("[Audio] Erro:", err.message);
       await sendText(msg, senderNumber, "erro ao processar áudio");
@@ -215,7 +215,7 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
       senderNumber
     );
       await persist("nina", reply, senderNumber);
-      await sendText(msg, senderNumber, reply);
+      await sendMultipleMessages(msg, senderNumber, reply);
     } else {
       pendingConfirmations.delete(senderNumber);
       await sendText(msg, senderNumber, "cancelado");
@@ -244,7 +244,7 @@ const normalizedFrom = msg.from.replace("@lid", "@c.us");
 
   await persist("nina", reply, senderNumber);
   console.log(`[Nina] ${reply}`);
-  await sendText(msg, senderNumber, reply);
+  await sendMultipleMessages(msg, senderNumber, reply);
 });
 
 client.on("auth_failure", (msg) => console.error("[Nina] Falha auth:", msg));

@@ -136,13 +136,19 @@ ${contextText}`,
           {
             role: "user",
             content: `Arquivo a melhorar: ${path.basename(targetFile)}
-            
-Instrução: ${instruction}
 
-Código atual:
+Instrução de melhoria: ${instruction}
+
+AVISOS ANTES DE GERAR:
+- Verifique se todos os exports do original estão presentes no código gerado
+- Não adicione dependências novas (require de pacotes externos)
+- Não altere assinaturas de funções exportadas
+- Retorne o arquivo COMPLETO, não apenas o trecho modificado
+
+Código atual (${targetContent.split("\n").length} linhas):
 ${targetContent}
 
-Retorne o arquivo completo melhorado:`,
+Retorne o arquivo JavaScript completo e melhorado. Comece diretamente com o código:`,
           },
         ],
         temperature: 0.2,
@@ -236,6 +242,39 @@ function validateNoNewDependencies(code) {
   return { ok: true };
 }
 
+// ── Validação de estrutura do código ─────────────────────────
+// Detecta problemas comuns gerados por LLMs
+
+function validateCodeStructure(code, originalContent) {
+  // Detecta ES modules acidentais (import/export)
+  const hasESImport = /^import\s+/m.test(code);
+  const hasESExport = /^export\s+(default|const|function|class)/m.test(code);
+  if (hasESImport || hasESExport) {
+    return { ok: false, error: "código usa ES modules (import/export) em vez de CommonJS (require/module.exports)" };
+  }
+
+  // Detecta markdown vazado (backticks de code block)
+  if (code.includes("```")) {
+    return { ok: false, error: "resposta contém markdown (``` backticks) — modelo não seguiu o formato" };
+  }
+
+  // Detecta se começa com texto não-código (explicação antes do código)
+  const firstLine = code.split("\n")[0].trim();
+  const looksLikeCode = firstLine.startsWith("//") || firstLine.startsWith("/*") || firstLine.startsWith("const") || firstLine.startsWith("'use strict'");
+  if (!looksLikeCode && firstLine.length > 0) {
+    return { ok: false, error: `arquivo não começa com código válido: "${firstLine.slice(0, 60)}"` };
+  }
+
+  // Detecta truncagem abrupta — arquivo termina sem module.exports
+  const originalHasExports = /module\.exports/.test(originalContent);
+  const newHasExports       = /module\.exports/.test(code);
+  if (originalHasExports && !newHasExports) {
+    return { ok: false, error: "module.exports removido ou código truncado antes do final" };
+  }
+
+  return { ok: true };
+}
+
 // ── Histórico de melhorias ────────────────────────────────────
 
 function loadHistory() {
@@ -294,13 +333,46 @@ async function improveFile(targetFile, instruction) {
 
     // ── PASSO 2: Gera melhoria ────────────────────────────────
     steps.push("gerando melhoria com DeepSeek");
-    const { code, error: genError } = await generateImprovement(fullPath, instruction, context);
+    let generationResult = await generateImprovement(fullPath, instruction, context);
+
+    // Retry automático em caso de falha transitória de API
+    if (generationResult.error && generationResult.error.includes("erro na API")) {
+      console.log("[Self-improve] Tentativa 1 falhou, aguardando 3s antes do retry...");
+      await new Promise(r => setTimeout(r, 3000));
+      generationResult = await generateImprovement(fullPath, instruction, context);
+    }
+
+    const { code, error: genError } = generationResult;
     if (genError) {
+      recordImprovement({
+        timestamp:  new Date().toISOString(),
+        file:       basename,
+        instruction,
+        success:    false,
+        failReason: `falha ao gerar: ${genError}`,
+        backupPath: null,
+      });
       return `falha ao gerar melhoria: ${genError}`;
     }
 
     // ── PASSO 3: Validações preventivas ──────────────────────
     steps.push("validando sintaxe");
+
+    // Validação de tamanho mínimo — detecta truncagem ou resposta vazia
+    const originalLines = originalContent.split("\n").length;
+    const generatedLines = code.split("\n").length;
+    if (generatedLines < Math.max(5, originalLines * 0.5)) {
+      recordImprovement({
+        timestamp:  new Date().toISOString(),
+        file:       basename,
+        instruction,
+        success:    false,
+        failReason: `código gerado muito pequeno: ${generatedLines} linhas vs ${originalLines} originais (possível truncagem)`,
+        backupPath: null,
+      });
+      return `melhoria rejeitada — código gerado suspeito (${generatedLines} linhas, original tem ${originalLines}).\nnenhuma alteração foi feita.`;
+    }
+
     const syntaxCheck = validateSyntax(code, fullPath);
     if (!syntaxCheck.ok) {
       recordImprovement({
@@ -340,6 +412,20 @@ async function improveFile(targetFile, instruction) {
         backupPath: null,
       });
       return `melhoria rejeitada — ${depsCheck.error}\n\nnenhuma alteração foi feita.`;
+    }
+
+    steps.push("verificando estrutura do código");
+    const structCheck = validateCodeStructure(code, originalContent);
+    if (!structCheck.ok) {
+      recordImprovement({
+        timestamp:  new Date().toISOString(),
+        file:       basename,
+        instruction,
+        success:    false,
+        failReason: structCheck.error,
+        backupPath: null,
+      });
+      return `melhoria rejeitada — ${structCheck.error}\n\nnenhuma alteração foi feita.`;
     }
 
     // ── PASSO 4: Backup ───────────────────────────────────────
@@ -395,11 +481,15 @@ async function improveFile(targetFile, instruction) {
     const diffLines = newLines - origLines;
     const diffStr   = diffLines > 0 ? `+${diffLines}` : `${diffLines}`;
 
+    const qualityNote = Math.abs(diffLines) > 50
+      ? `\nobs: mudança grande (${diffStr} linhas) — vale revisar o backup antes de reiniciar`
+      : "";
+
     return [
       `melhoria aplicada em ${basename} (${diffStr} linhas)`,
-      `backup salvo em: ${path.basename(backupPath)}`,
-      `passos: ${steps.join(" → ")}`,
-      `reinicia pra aplicar as mudanças? (sim/não)`,
+      `backup: ${path.basename(backupPath)}`,
+      `${steps.length} passos, tudo passou${qualityNote}`,
+      `reinicia pra aplicar?`,
     ].join("\n");
 
   } catch (err) {
